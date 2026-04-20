@@ -1,0 +1,73 @@
+[changelog]
+header = """
+# Changelog
+
+All notable changes to WiredBot are documented here.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}\
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits %}\
+- {{ commit.message | upper_first }} \
+([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/nark/WiredBot/commit/{{ commit.id }}))\
+{% if commit.breaking %} BREAKING{% endif %}
+
+{% endfor %}\
+{% endfor %}\
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+split_commits = false
+
+commit_preprocessors = [
+  { pattern = "(?s)\n.*", replace = "" },
+]
+
+commit_parsers = [
+  { message = "^feat",                       group = "Features" },
+  { message = "^fix",                        group = "Bug Fixes" },
+  { message = "^perf",                       group = "Performance" },
+  { message = "^refactor",                   group = "Refactoring" },
+  { message = "^test",                       group = "Testing" },
+  { message = "^docs",                       group = "Documentation" },
+  { message = "^ci",                         group = "CI" },
+  { message = "^build",                      skip  = true },
+  { message = "^chore\\(release\\)",         skip  = true },
+  { message = "^chore",                      skip  = true },
+  { message = "^style",                      skip  = true },
+  { message = "^Add ",                       group = "Features" },
+  { message = "^Implement ",                 group = "Features" },
+  { message = "^Support ",                   group = "Features" },
+  { message = "^Enable ",                    group = "Features" },
+  { message = "^Fix ",                       group = "Bug Fixes" },
+  { message = "^Avoid ",                     group = "Bug Fixes" },
+  { message = "^Secure ",                    group = "Bug Fixes" },
+  { message = "^Stabilize ",                 group = "Bug Fixes" },
+  { message = "^Optimize ",                  group = "Performance" },
+  { message = "^Refactor ",                  group = "Refactoring" },
+  { message = "^Split ",                     group = "Refactoring" },
+  { message = "^Improve ",                   group = "Refactoring" },
+  { message = "^Update README",              group = "Documentation" },
+  { message = "^Update docs",                group = "Documentation" },
+  { message = "^Merge ",                     skip  = true },
+  { message = ".*",                          group = "Other" },
+]
+
+filter_commits = true
+tag_pattern = "v[0-9]+\\.[0-9]+.*"
+topo_order = false
+sort_commits = "newest"
+
+[remote.github]
+owner = "nark"
+repo = "WiredBot"

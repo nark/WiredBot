@@ -1,0 +1,415 @@
+name: Build Linux Packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      marketing_version:
+        description: "Marketing version (ex: 3.0)"
+        required: true
+      build_number:
+        description: "Build number (ex: 38)"
+        required: true
+      bot_commit:
+        description: Bot commit SHA (optional)
+        required: false
+      release_tag:
+        description: "Release tag (ex: v3.0+38)"
+        required: true
+      package_name:
+        description: Debian package name
+        required: true
+        default: wiredbot
+      rpm_package_name:
+        description: RPM package name
+        required: false
+        default: wiredbot
+      rpm_version:
+        description: RPM version base (without build number)
+        required: false
+        default: "3.0"
+      rpm_release:
+        description: RPM release number
+        required: false
+        default: "1"
+      maintainer:
+        description: Debian maintainer field
+        required: true
+        default: Wired Team <team@example.com>
+      depends:
+        description: Debian depends field
+        required: true
+        default: "libc6, ca-certificates, libcurl4, liblz4-1, libsqlite3-0, libssl3, libxml2, zlib1g"
+      service_enable:
+        description: Install systemd unit (1/0)
+        required: true
+        default: "1"
+      debian_artifact_name:
+        description: Final Debian workflow artifact name
+        required: false
+        default: linux-deb-packages
+      rpm_enable:
+        description: Build RPM packages (1/0)
+        required: false
+        default: "1"
+      rpm_artifact_name:
+        description: Final RPM workflow artifact name
+        required: false
+        default: linux-rpm-packages
+
+jobs:
+  build:
+    name: Build packages ${{ matrix.deb_arch }}
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: swift:6.0-jammy
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - deb_arch: amd64
+            rpm_arch: x86_64
+            file_arch_token: x86-64
+            runner: ubuntu-latest
+          - deb_arch: arm64
+            rpm_arch: aarch64
+            file_arch_token: aarch64
+            runner: ubuntu-24.04-arm
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Mark workspace as safe for Git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Checkout requested commit
+        if: ${{ inputs.bot_commit != '' }}
+        run: git checkout "${{ inputs.bot_commit }}"
+
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            file \
+            dpkg-dev \
+            rpm \
+            liblz4-dev \
+            libsqlite3-dev \
+            libssl-dev \
+            zlib1g-dev
+
+      - name: Build and package
+        env:
+          TARGET_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
+          FILE_ARCH_TOKEN: ${{ matrix.file_arch_token }}
+        run: |
+          set -euo pipefail
+
+          swift build -c release --product WiredBot -Xswiftc -DGRDBCUSTOMSQLITE
+          BIN_DIR="$(swift build -c release --show-bin-path)"
+          BIN_PATH="$BIN_DIR/WiredBot"
+          mapfile -t SWIFT_DEPS < <(ldd "$BIN_PATH" | awk '/=> \// {print $3}' | grep '/swift/' | sort -u)
+
+          DEB_NAME="${{ inputs.package_name }}_${{ inputs.marketing_version }}+${{ inputs.build_number }}_${TARGET_ARCH}.deb"
+          RPM_NAME="${{ inputs.rpm_package_name }}-${{ inputs.rpm_version }}+${{ inputs.build_number }}-${{ inputs.rpm_release }}.${RPM_ARCH}.rpm"
+          STAGE_DIR="$GITHUB_WORKSPACE/.tmp/deb-stage-$TARGET_ARCH"
+          OUT_DIR="$GITHUB_WORKSPACE/out-$TARGET_ARCH"
+          VERIFY_DIR="$GITHUB_WORKSPACE/.tmp/verify-$TARGET_ARCH"
+          VERIFY_CONTROL_DIR="$GITHUB_WORKSPACE/.tmp/verify-control-$TARGET_ARCH"
+          OUT_DEB="$OUT_DIR/$DEB_NAME"
+          OUT_RPM="$OUT_DIR/$RPM_NAME"
+          DEFAULT_SPEC_SOURCE="$GITHUB_WORKSPACE/.build/checkouts/WiredSwift/Sources/WiredSwift/Resources/wired.xml"
+          DEFAULT_CONFIG_SOURCE="$GITHUB_WORKSPACE/Examples/wiredbot-example.json"
+          SERVICE_SOURCE="$GITHUB_WORKSPACE/Examples/wiredbot.service"
+
+          file "$BIN_PATH"
+          file "$BIN_PATH" | grep -q "$FILE_ARCH_TOKEN"
+          ldd "$BIN_PATH" || true
+          if [[ ${#SWIFT_DEPS[@]} -eq 0 ]]; then
+            echo "No Swift runtime dependencies found in ldd output"
+            ldd "$BIN_PATH" || true
+            exit 1
+          fi
+          test -f "$DEFAULT_SPEC_SOURCE"
+          test -f "$DEFAULT_CONFIG_SOURCE"
+          test -f "$SERVICE_SOURCE"
+
+          rm -rf "$STAGE_DIR" "$OUT_DIR" "$VERIFY_DIR" "$VERIFY_CONTROL_DIR"
+          mkdir -p \
+            "$STAGE_DIR/DEBIAN" \
+            "$STAGE_DIR/usr/local/bin" \
+            "$STAGE_DIR/usr/lib/wiredbot" \
+            "$STAGE_DIR/usr/share/wiredbot" \
+            "$OUT_DIR" \
+            "$VERIFY_DIR" \
+            "$VERIFY_CONTROL_DIR"
+
+          cp "$BIN_PATH" "$STAGE_DIR/usr/lib/wiredbot/wiredbot-bin"
+          chmod 0755 "$STAGE_DIR/usr/lib/wiredbot/wiredbot-bin"
+          cp "${SWIFT_DEPS[@]}" "$STAGE_DIR/usr/lib/wiredbot/"
+          cp "$DEFAULT_SPEC_SOURCE" "$STAGE_DIR/usr/share/wiredbot/wired.xml"
+          cp "$DEFAULT_CONFIG_SOURCE" "$STAGE_DIR/usr/share/wiredbot/wiredbot.json.example"
+
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            'export LD_LIBRARY_PATH="/usr/lib/wiredbot:${LD_LIBRARY_PATH:-}"' \
+            'exec /usr/lib/wiredbot/wiredbot-bin "$@"' \
+            > "$STAGE_DIR/usr/local/bin/wiredbot"
+          chmod 0755 "$STAGE_DIR/usr/local/bin/wiredbot"
+
+          printf '%s\n' \
+            "Package: ${{ inputs.package_name }}" \
+            "Version: ${{ inputs.marketing_version }}+${{ inputs.build_number }}" \
+            "Section: net" \
+            "Priority: optional" \
+            "Architecture: ${TARGET_ARCH}" \
+            "Maintainer: ${{ inputs.maintainer }}" \
+            "Depends: ${{ inputs.depends }}" \
+            "Description: WiredBot chatbot daemon for Wired 3" \
+            " WiredBot is a configurable chatbot daemon for the Wired 3 protocol." \
+            > "$STAGE_DIR/DEBIAN/control"
+
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            'if ! getent group wiredbot >/dev/null 2>&1; then' \
+            '  groupadd --system wiredbot' \
+            'fi' \
+            'if ! id -u wiredbot >/dev/null 2>&1; then' \
+            '  useradd --system --gid wiredbot --home-dir /var/lib/wiredbot --create-home --shell /usr/sbin/nologin --comment "WiredBot service account" wiredbot' \
+            'fi' \
+            'install -d -m 0750 -o wiredbot -g wiredbot /var/lib/wiredbot' \
+            'install -d -m 0750 -o wiredbot -g wiredbot /var/log/wiredbot' \
+            'install -d -m 0755 /etc/wiredbot' \
+            '[[ -f /etc/wiredbot/wiredbot.json ]] || install -m 0640 -o root -g wiredbot /usr/share/wiredbot/wiredbot.json.example /etc/wiredbot/wiredbot.json' \
+            '[[ -f /usr/share/wiredbot/wired.xml ]]' \
+            'if command -v systemctl >/dev/null 2>&1; then' \
+            '  systemctl daemon-reload || true' \
+            '  if [[ -f /run/wiredbot.service.was-active ]]; then' \
+            '    systemctl start wiredbot.service || true' \
+            '    rm -f /run/wiredbot.service.was-active' \
+            '  fi' \
+            'fi' \
+            > "$STAGE_DIR/DEBIAN/postinst"
+          chmod 0755 "$STAGE_DIR/DEBIAN/postinst"
+
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            'set -euo pipefail' \
+            'if command -v systemctl >/dev/null 2>&1; then' \
+            '  if [[ "${1:-}" = "upgrade" ]]; then' \
+            '    if systemctl is-active --quiet wiredbot.service; then' \
+            '      install -D -m 0644 /dev/null /run/wiredbot.service.was-active' \
+            '    else' \
+            '      rm -f /run/wiredbot.service.was-active' \
+            '    fi' \
+            '    systemctl stop wiredbot.service >/dev/null 2>&1 || true' \
+            '  else' \
+            '    rm -f /run/wiredbot.service.was-active' \
+            '    systemctl stop wiredbot.service >/dev/null 2>&1 || true' \
+            '    systemctl disable wiredbot.service >/dev/null 2>&1 || true' \
+            '  fi' \
+            'fi' \
+            > "$STAGE_DIR/DEBIAN/prerm"
+          chmod 0755 "$STAGE_DIR/DEBIAN/prerm"
+
+          if [[ "${{ inputs.service_enable }}" == "1" ]]; then
+            mkdir -p "$STAGE_DIR/lib/systemd/system"
+            cp "$SERVICE_SOURCE" "$STAGE_DIR/lib/systemd/system/wiredbot.service"
+          fi
+
+          dpkg-deb --build --root-owner-group "$STAGE_DIR" "$OUT_DEB"
+          dpkg-deb -x "$OUT_DEB" "$VERIFY_DIR"
+          dpkg-deb -e "$OUT_DEB" "$VERIFY_CONTROL_DIR"
+          file "$VERIFY_DIR/usr/lib/wiredbot/wiredbot-bin"
+          file "$VERIFY_DIR/usr/lib/wiredbot/wiredbot-bin" | grep -q "$FILE_ARCH_TOKEN"
+          test -f "$VERIFY_DIR/usr/share/wiredbot/wired.xml"
+          test -f "$VERIFY_DIR/usr/share/wiredbot/wiredbot.json.example"
+          grep -q 'useradd --system' "$VERIFY_CONTROL_DIR/postinst"
+
+          if [[ "${{ inputs.rpm_enable }}" == "1" ]]; then
+            RPM_ROOT="$GITHUB_WORKSPACE/.tmp/rpm-root-$TARGET_ARCH"
+            RPMBUILD_DIR="$GITHUB_WORKSPACE/.tmp/rpmbuild-$TARGET_ARCH"
+            RPM_SOURCES_DIR="$RPMBUILD_DIR/SOURCES"
+            RPM_SPECS_DIR="$RPMBUILD_DIR/SPECS"
+            SPEC_PATH="$RPM_SPECS_DIR/${{ inputs.rpm_package_name }}.spec"
+
+            rm -rf "$RPM_ROOT" "$RPMBUILD_DIR"
+            mkdir -p \
+              "$RPM_ROOT/usr/local/bin" \
+              "$RPM_ROOT/usr/lib/wiredbot" \
+              "$RPM_ROOT/usr/share/wiredbot" \
+              "$RPM_ROOT/usr/lib/systemd/system" \
+              "$RPMBUILD_DIR/BUILD" \
+              "$RPMBUILD_DIR/RPMS" \
+              "$RPMBUILD_DIR/SRPMS" \
+              "$RPM_SOURCES_DIR" \
+              "$RPM_SPECS_DIR"
+
+            cp "$STAGE_DIR/usr/local/bin/wiredbot" "$RPM_ROOT/usr/local/bin/wiredbot"
+            cp -a "$STAGE_DIR/usr/lib/wiredbot/." "$RPM_ROOT/usr/lib/wiredbot/"
+            cp "$STAGE_DIR/usr/share/wiredbot/wired.xml" "$RPM_ROOT/usr/share/wiredbot/wired.xml"
+            cp "$STAGE_DIR/usr/share/wiredbot/wiredbot.json.example" "$RPM_ROOT/usr/share/wiredbot/wiredbot.json.example"
+            if [[ "${{ inputs.service_enable }}" == "1" ]]; then
+              cp "$SERVICE_SOURCE" "$RPM_ROOT/usr/lib/systemd/system/wiredbot.service"
+            fi
+            tar -C "$RPM_ROOT" -czf "$RPM_SOURCES_DIR/rootfs.tar.gz" .
+
+            printf '%s\n' \
+              '#!/usr/bin/env bash' \
+              'set -euo pipefail' \
+              'if ! getent group wiredbot >/dev/null 2>&1; then' \
+              '  groupadd --system wiredbot' \
+              'fi' \
+              'if ! id -u wiredbot >/dev/null 2>&1; then' \
+              '  useradd --system --gid wiredbot --home-dir /var/lib/wiredbot --create-home --shell /usr/sbin/nologin --comment "WiredBot service account" wiredbot' \
+              'fi' \
+              'install -d -m 0750 -o wiredbot -g wiredbot /var/lib/wiredbot' \
+              'install -d -m 0750 -o wiredbot -g wiredbot /var/log/wiredbot' \
+              'install -d -m 0755 /etc/wiredbot' \
+              '[[ -f /etc/wiredbot/wiredbot.json ]] || install -m 0640 -o root -g wiredbot /usr/share/wiredbot/wiredbot.json.example /etc/wiredbot/wiredbot.json' \
+              'if command -v systemctl >/dev/null 2>&1; then' \
+              '  systemctl daemon-reload || true' \
+              '  if [[ -f /run/wiredbot.service.was-active ]]; then' \
+              '    systemctl start wiredbot.service || true' \
+              '    rm -f /run/wiredbot.service.was-active' \
+              '  fi' \
+              'fi' \
+              > "$RPM_SOURCES_DIR/post.sh"
+            chmod 0755 "$RPM_SOURCES_DIR/post.sh"
+
+            printf '%s\n' \
+              '#!/usr/bin/env bash' \
+              'set -euo pipefail' \
+              'if command -v systemctl >/dev/null 2>&1; then' \
+              '  if [[ "${1:-0}" -ge 1 ]]; then' \
+              '    if systemctl is-active --quiet wiredbot.service; then' \
+              '      install -D -m 0644 /dev/null /run/wiredbot.service.was-active' \
+              '    else' \
+              '      rm -f /run/wiredbot.service.was-active' \
+              '    fi' \
+              '    systemctl stop wiredbot.service >/dev/null 2>&1 || true' \
+              '  else' \
+              '    rm -f /run/wiredbot.service.was-active' \
+              '    systemctl stop wiredbot.service >/dev/null 2>&1 || true' \
+              '    systemctl disable wiredbot.service >/dev/null 2>&1 || true' \
+              '  fi' \
+              'fi' \
+              > "$RPM_SOURCES_DIR/preun.sh"
+            chmod 0755 "$RPM_SOURCES_DIR/preun.sh"
+
+            printf '%s\n' \
+              '#!/usr/bin/env bash' \
+              'set -euo pipefail' \
+              'if command -v systemctl >/dev/null 2>&1; then' \
+              '  systemctl daemon-reload || true' \
+              'fi' \
+              > "$RPM_SOURCES_DIR/postun.sh"
+            chmod 0755 "$RPM_SOURCES_DIR/postun.sh"
+
+            {
+              echo "Name:           ${{ inputs.rpm_package_name }}"
+              echo "Version:        ${{ inputs.rpm_version }}+${{ inputs.build_number }}"
+              echo "Release:        ${{ inputs.rpm_release }}"
+              echo "Summary:        WiredBot chatbot daemon for Wired 3"
+              echo "License:        Proprietary"
+              echo "BuildArch:      ${RPM_ARCH}"
+              echo "Source0:        rootfs.tar.gz"
+              echo "Source1:        post.sh"
+              echo "Source2:        preun.sh"
+              echo "Source3:        postun.sh"
+              echo ""
+              echo "%description"
+              echo "WiredBot packaged for RPM-based distributions."
+              echo ""
+              echo "%prep"
+              echo "%setup -q -c -T"
+              echo "tar -xzf %{SOURCE0} -C ."
+              echo ""
+              echo "%build"
+              echo ""
+              echo "%install"
+              echo "mkdir -p %{buildroot}"
+              echo "cp -a . %{buildroot}/"
+              echo ""
+              echo "%post -p /bin/bash"
+              echo "%{SOURCE1}"
+              echo ""
+              echo "%preun -p /bin/bash"
+              echo "%{SOURCE2}"
+              echo ""
+              echo "%postun -p /bin/bash"
+              echo "%{SOURCE3}"
+              echo ""
+              echo "%files"
+              echo "/usr/local/bin/wiredbot"
+              echo "/usr/lib/wiredbot"
+              echo "/usr/share/wiredbot"
+              if [[ "${{ inputs.service_enable }}" == "1" ]]; then
+                echo "/usr/lib/systemd/system/wiredbot.service"
+              fi
+            } > "$SPEC_PATH"
+
+            rpmbuild -bb "$SPEC_PATH" \
+              --define "_topdir $RPMBUILD_DIR" \
+              --define "dist %{nil}"
+            cp "$RPMBUILD_DIR/RPMS/$RPM_ARCH/"*.rpm "$OUT_RPM"
+            file "$OUT_RPM" | grep -Eq "${RPM_ARCH}|x86-64"
+          fi
+
+      - name: Upload Debian arch artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-${{ matrix.deb_arch }}
+          path: out-${{ matrix.deb_arch }}/*.deb
+          if-no-files-found: error
+
+      - name: Upload RPM arch artifact
+        if: ${{ inputs.rpm_enable == '1' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-${{ matrix.deb_arch }}
+          path: out-${{ matrix.deb_arch }}/*.rpm
+          if-no-files-found: error
+
+  collect:
+    name: Collect packages
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download Debian artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: deb-*
+          path: deb
+          merge-multiple: true
+
+      - name: Upload Debian packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.debian_artifact_name }}
+          path: deb/*.deb
+          if-no-files-found: error
+
+      - name: Download RPM artifacts
+        if: ${{ inputs.rpm_enable == '1' }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rpm-*
+          path: rpm
+          merge-multiple: true
+
+      - name: Upload RPM packages
+        if: ${{ inputs.rpm_enable == '1' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.rpm_artifact_name }}
+          path: rpm/*.rpm
+          if-no-files-found: error
