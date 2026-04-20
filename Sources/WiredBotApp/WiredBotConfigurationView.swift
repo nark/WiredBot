@@ -514,52 +514,54 @@ private struct TriggerEventTypesPicker: View {
     ]
 
     var body: some View {
-        LabeledContent("Event types") {
-            Menu {
-                ForEach(options) { option in
-                    Button {
-                        toggle(option.id)
-                    } label: {
-                        if values.contains(option.id) {
-                            Label(option.title, systemImage: "checkmark")
-                        } else {
-                            Text(option.title)
-                        }
-                    }
-                }
-
-                if hasUnknownValues {
-                    Divider()
-                    ForEach(unknownValues, id: \.self) { value in
+        FieldRow("Event types") {
+            VStack(alignment: .leading, spacing: 6) {
+                Menu {
+                    ForEach(options) { option in
                         Button {
-                            toggle(value)
+                            toggle(option.id)
                         } label: {
-                            Label(value, systemImage: "questionmark.circle")
+                            if values.contains(option.id) {
+                                Label(option.title, systemImage: "checkmark")
+                            } else {
+                                Text(option.title)
+                            }
                         }
                     }
-                }
-            } label: {
-                HStack(spacing: 6) {
-                    Text(summary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Image(systemName: "chevron.down")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .menuStyle(.button)
-        }
 
-        if !values.isEmpty {
-            FlowLayout(spacing: 6) {
-                ForEach(values, id: \.self) { value in
-                    Text(title(for: value))
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                    if hasUnknownValues {
+                        Divider()
+                        ForEach(unknownValues, id: \.self) { value in
+                            Button {
+                                toggle(value)
+                            } label: {
+                                Label(value, systemImage: "questionmark.circle")
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(summary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.down")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .menuStyle(.button)
+
+                if !values.isEmpty {
+                    FlowLayout(spacing: 6) {
+                        ForEach(values, id: \.self) { value in
+                            Text(title(for: value))
+                                .font(.caption)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                        }
+                    }
                 }
             }
         }
@@ -713,6 +715,33 @@ private struct SettingsSection<Content: View>: View {
     }
 }
 
+private enum FormLayout {
+    static let labelWidth: CGFloat = 160
+    static let controlSpacing: CGFloat = 12
+    static let numberFieldWidth: CGFloat = 120
+}
+
+private struct FieldRow<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: FormLayout.controlSpacing) {
+            Text(title)
+                .frame(width: FormLayout.labelWidth, alignment: .trailing)
+                .foregroundStyle(.primary)
+
+            content
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 private struct StatusCard: View {
     let title: String
     let value: String
@@ -753,11 +782,11 @@ private struct NumericField: View {
     }
 
     var body: some View {
-        LabeledContent(title) {
+        FieldRow(title) {
             HStack {
                 TextField(title, value: $value, format: .number)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
+                    .frame(width: FormLayout.numberFieldWidth)
                 if !suffix.isEmpty {
                     Text(suffix)
                         .foregroundStyle(.secondary)
@@ -779,11 +808,11 @@ private struct IntField: View {
     }
 
     var body: some View {
-        LabeledContent(title) {
+        FieldRow(title) {
             HStack {
                 TextField(title, value: $value, format: .number)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
+                    .frame(width: FormLayout.numberFieldWidth)
                 if !suffix.isEmpty {
                     Text(suffix)
                         .foregroundStyle(.secondary)
@@ -798,7 +827,7 @@ private struct ArrayField: View {
     @Binding var values: [UInt32]
 
     var body: some View {
-        LabeledContent(title) {
+        FieldRow(title) {
             TextField(title, text: Binding(
                 get: { values.map(String.init).joined(separator: ", ") },
                 set: { text in
@@ -808,6 +837,7 @@ private struct ArrayField: View {
                 }
             ))
             .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: .infinity)
         }
     }
 }
@@ -817,7 +847,7 @@ private struct StringArrayField: View {
     @Binding var values: [String]
 
     var body: some View {
-        LabeledContent(title) {
+        FieldRow(title) {
             TextField(title, text: Binding(
                 get: { values.joined(separator: ", ") },
                 set: { text in
@@ -828,6 +858,7 @@ private struct StringArrayField: View {
                 }
             ))
             .textFieldStyle(.roundedBorder)
+            .frame(maxWidth: .infinity)
         }
     }
 }
@@ -838,7 +869,7 @@ private struct PathField: View {
     let choose: () -> Void
 
     var body: some View {
-        LabeledContent(title) {
+        FieldRow(title) {
             HStack {
                 TextField(title, text: $path)
                     .textFieldStyle(.roundedBorder)
@@ -866,7 +897,7 @@ private struct PathRow: View {
     let value: String
 
     var body: some View {
-        LabeledContent(title) {
+        FieldRow(title) {
             Text(value)
                 .lineLimit(1)
                 .truncationMode(.middle)
