@@ -149,6 +149,9 @@ Any missing keys use their default value.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `url` | string | `"wired://guest@localhost:4871"` | Full Wired server URL. Format: `wired://login:password@host:port` |
+| `useKeychainPassword` | bool | `false` | macOS only. When true, the password is read from the user's Keychain instead of `url`. |
+| `keychainService` | string? | `null` | Generic password service name. `null` uses `fr.read-write.wiredbot.server`. |
+| `keychainAccount` | string? | `null` | Generic password account. `null` derives `login@host:port` from `url`. |
 | `channels` | [uint] | `[1]` | Channel IDs to join after connecting. `1` = public chat. |
 | `reconnectDelay` | float | `30.0` | Seconds to wait between reconnection attempts. |
 | `maxReconnectAttempts` | int | `0` | Max number of attempts. `0` = unlimited. |
@@ -171,6 +174,17 @@ Any missing keys use their default value.
   "reconnectDelay": 15.0,
   "maxReconnectAttempts": 10,
   "specPath": "/opt/wired/wired.xml"
+}
+```
+
+On macOS, Wired Bot.app can store the server password in Keychain and keep it out of the JSON file:
+
+```json
+"server": {
+  "url": "wired://botaccount@chat.myserver.com:4871",
+  "useKeychainPassword": true,
+  "keychainService": "fr.read-write.wiredbot.server",
+  "keychainAccount": "botaccount@chat.myserver.com:4871"
 }
 ```
 
@@ -608,7 +622,7 @@ In daemon mode (default when `foreground: false`), the process:
 |--------|--------|
 | `SIGTERM` | Clean shutdown: closes connection, removes PID file |
 | `SIGINT` | Same (Ctrl+C in foreground mode) |
-| `SIGHUP` | Reload notification (log only — a restart is required to apply config changes) |
+| `SIGHUP` | Reload JSON configuration without disconnecting. Server URL and spec path changes are saved but require a reconnect. |
 
 ```bash
 # Clean shutdown
@@ -617,6 +631,8 @@ kill $(cat /tmp/wiredbot.pid)
 # Signal a reload
 kill -HUP $(cat /tmp/wiredbot.pid)
 ```
+
+Wired Bot.app sends `SIGHUP` automatically after saving configuration while the bot is running, so live settings are applied without a logout/login cycle.
 
 ---
 

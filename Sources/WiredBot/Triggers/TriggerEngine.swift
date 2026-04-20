@@ -25,7 +25,7 @@ public struct BoardTriggerMatch {
 // MARK: - Engine
 
 public final class TriggerEngine {
-    private let triggers: [TriggerConfig]
+    private var triggers: [TriggerConfig]
 
     // Per-trigger-per-user cooldown: "triggerName|nick" -> last fired date
     private var cooldowns: [String: Date] = [:]
@@ -35,9 +35,19 @@ public final class TriggerEngine {
         self.triggers = triggers
     }
 
+    public func reload(triggers: [TriggerConfig]) {
+        lock.lock()
+        self.triggers = triggers
+        lock.unlock()
+    }
+
     /// Returns the first matching trigger for the given input, or nil.
     public func match(input: String, nick: String, chatID: UInt32, isPrivate: Bool) -> TriggerMatch? {
-        for trigger in triggers {
+        lock.lock()
+        let currentTriggers = triggers
+        lock.unlock()
+
+        for trigger in currentTriggers {
             // 1. Event type filter
             let types = trigger.eventTypes
             if !types.contains("all") {
@@ -88,7 +98,11 @@ public final class TriggerEngine {
     public func matchBoardEvent(eventType: String, subject: String, text: String,
                                 nick: String, board: String) -> BoardTriggerMatch? {
         let combined = text.isEmpty ? subject : "\(subject) \(text)"
-        for trigger in triggers {
+        lock.lock()
+        let currentTriggers = triggers
+        lock.unlock()
+
+        for trigger in currentTriggers {
             let types = trigger.eventTypes
             guard types.contains(eventType) || types.contains("all") else { continue }
 

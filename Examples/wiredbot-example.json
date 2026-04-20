@@ -1,6 +1,9 @@
 {
   "server": {
     "url": "wired://botuser:password@localhost:4871",
+    "useKeychainPassword": false,
+    "keychainService": null,
+    "keychainAccount": null,
     "channels": [1],
     "reconnectDelay": 30,
     "maxReconnectAttempts": 0,

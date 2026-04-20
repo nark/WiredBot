@@ -4,6 +4,7 @@
 
 import Foundation
 import ArgumentParser
+import WiredBotCore
 import WiredSwift
 
 // MARK: - Root command
@@ -43,7 +44,6 @@ struct RunCommand: ParsableCommand {
     var verbose: Bool = false
 
     mutating func run() throws {
-        // 1. Load config
         let botConfig: BotConfig
         do {
             botConfig = try ConfigLoader.load(from: config)
@@ -52,20 +52,16 @@ struct RunCommand: ParsableCommand {
             throw ExitCode.failure
         }
 
-        // 2. Configure logging (before daemonize so early messages are visible)
         let daemon = DaemonController(config: botConfig.daemon)
         daemon.configureLogging(verbose: verbose)
 
-        // 3. Daemonize if needed
         let runForeground = foreground || botConfig.daemon.foreground
         if !runForeground {
             daemon.daemonize()
         }
 
-        // 4. Write PID file
         daemon.writePIDFile()
 
-        // 5. Locate wired.xml
         let specPath: String
         if let s = spec {
             specPath = s
@@ -80,22 +76,27 @@ struct RunCommand: ParsableCommand {
             throw ExitCode.failure
         }
 
-        // 6. Create bot
         let bot = BotController(config: botConfig)
+        let configPath = config
+        let verboseEnabled = verbose
 
-        // 7. Signal handlers
         SignalHandler.onTerminate = {
-            BotLogger.info("Shutting down…")
+            BotLogger.info("Shutting down...")
             bot.stop()
             daemon.removePIDFile()
             Foundation.exit(0)
         }
         SignalHandler.onReload = {
-            BotLogger.info("Config reload requested (restart required for full effect)")
+            do {
+                let reloadedConfig = try ConfigLoader.load(from: configPath)
+                DaemonController(config: reloadedConfig.daemon).configureLogging(verbose: verboseEnabled)
+                bot.reload(config: reloadedConfig)
+            } catch {
+                BotLogger.error("Config reload failed: \(error.localizedDescription)")
+            }
         }
         SignalHandler.setup()
 
-        // 8. Banner
         BotLogger.info("WiredBot 1.0 starting")
         BotLogger.info("Config    : \(config)")
         BotLogger.info("Spec      : \(specPath)")
@@ -104,7 +105,6 @@ struct RunCommand: ParsableCommand {
         BotLogger.info("LLM       : \(botConfig.llm.provider) / \(botConfig.llm.model)")
         BotLogger.info("Channels  : \(botConfig.server.channels)")
 
-        // 9. Start (blocks)
         do {
             try bot.start(specPath: specPath)
         } catch {

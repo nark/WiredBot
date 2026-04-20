@@ -25,9 +25,9 @@ public enum BotError: Error, LocalizedError {
 public final class BotController: NSObject {
 
     // MARK: Public config / services (read from SwiftUI wrapper if needed)
-    public let config: BotConfig
+    public private(set) var config: BotConfig
     public let triggerEngine: TriggerEngine
-    public let contextManager: ConversationContextManager
+    public private(set) var contextManager: ConversationContextManager
     public private(set) var llmProvider: LLMProvider?
 
     // MARK: Event handlers
@@ -97,6 +97,27 @@ public final class BotController: NSObject {
         connection?.disconnect()
     }
 
+    public func reload(config newConfig: BotConfig) {
+        let oldConfig = config
+        config = newConfig
+        triggerEngine.reload(triggers: newConfig.triggers)
+        llmProvider = LLMProviderFactory.create(from: newConfig.llm)
+
+        if oldConfig.llm.contextMessages != newConfig.llm.contextMessages {
+            contextManager = ConversationContextManager(maxMessages: newConfig.llm.contextMessages)
+            BotLogger.info("Conversation contexts reset after contextMessages change")
+        }
+
+        applyLiveIdentityIfNeeded(old: oldConfig.identity, new: newConfig.identity)
+        joinNewChannels(old: oldConfig.server.channels, new: newConfig.server.channels)
+
+        if oldConfig.server.url != newConfig.server.url || oldConfig.server.specPath != newConfig.server.specPath {
+            BotLogger.warning("Server URL/spec changes are saved but require reconnect to take effect")
+        }
+
+        BotLogger.info("Configuration reloaded")
+    }
+
     // MARK: - Connection management
 
     private func connectToServer() throws {
@@ -123,9 +144,70 @@ public final class BotController: NSObject {
 
         self.connection = conn
 
-        let url = Url(withString: config.server.url)
+        let url = Url(withString: resolvedServerURL())
         BotLogger.info("Connecting to \(url.urlString())…")
         try conn.connect(withUrl: url)
+    }
+
+    private func applyLiveIdentityIfNeeded(old: IdentityConfig, new: IdentityConfig) {
+        guard let connection, let spec, connection.isConnected() else { return }
+
+        if old.nick != new.nick {
+            connection.nick = new.nick
+            let message = P7Message(withName: "wired.user.set_nick", spec: spec)
+            message.addParameter(field: "wired.user.nick", value: new.nick)
+            _ = connection.send(message: message)
+            BotLogger.info("Updated live bot nick")
+        }
+
+        if old.status != new.status {
+            connection.status = new.status
+            let message = P7Message(withName: "wired.user.set_status", spec: spec)
+            message.addParameter(field: "wired.user.status", value: new.status)
+            _ = connection.send(message: message)
+            BotLogger.info("Updated live bot status")
+        }
+
+        if old.icon != new.icon {
+            connection.icon = new.icon ?? Wired.defaultUserIcon
+            let message = P7Message(withName: "wired.user.set_icon", spec: spec)
+            message.addParameter(
+                field: "wired.user.icon",
+                value: Data(base64Encoded: connection.icon, options: .ignoreUnknownCharacters)
+            )
+            _ = connection.send(message: message)
+            BotLogger.info("Updated live bot icon")
+        }
+    }
+
+    private func joinNewChannels(old: [UInt32], new: [UInt32]) {
+        guard let connection, connection.isConnected() else { return }
+
+        let oldSet = Set(old)
+        for chatID in new where !oldSet.contains(chatID) {
+            BotLogger.info("Joining newly configured channel \(chatID)...")
+            _ = connection.joinChat(chatID: chatID)
+        }
+    }
+
+    private func resolvedServerURL() -> String {
+        guard config.server.useKeychainPassword else {
+            return config.server.url
+        }
+
+        let service = ServerPasswordKeychain.service(for: config.server)
+        let account = ServerPasswordKeychain.account(for: config.server)
+        do {
+            if let password = try ServerPasswordKeychain.readPassword(service: service, account: account),
+               !password.isEmpty {
+                return ServerPasswordKeychain.urlByInjecting(password: password, into: config.server.url)
+            }
+            BotLogger.warning("No Keychain password found for \(service) / \(account); connecting without a password")
+        } catch {
+            BotLogger.error("Cannot read Keychain password for \(service) / \(account): \(error.localizedDescription)")
+        }
+
+        return config.server.url
     }
 
     public func handleLogin(connection: Connection) {

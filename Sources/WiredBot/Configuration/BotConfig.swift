@@ -5,7 +5,7 @@ import Foundation
 
 // MARK: - Root
 
-public struct BotConfig: Codable {
+public struct BotConfig: Codable, Equatable {
     public var server: ServerConfig
     public var identity: IdentityConfig
     public var llm: LLMConfig
@@ -25,9 +25,15 @@ public struct BotConfig: Codable {
 
 // MARK: - Server
 
-public struct ServerConfig: Codable {
+public struct ServerConfig: Codable, Equatable {
     /// Full Wired URL, e.g. "wired://bot:password@localhost:4871"
     public var url: String = "wired://guest@localhost:4871"
+    /// macOS only: read the Wired server password from Keychain instead of the URL.
+    public var useKeychainPassword: Bool = false
+    /// Generic password service used for Keychain lookup.
+    public var keychainService: String?
+    /// Generic password account used for Keychain lookup. nil = derived from URL.
+    public var keychainAccount: String?
     /// Chat channel IDs to join after login (1 = public chat)
     public var channels: [UInt32] = [1]
     /// Seconds to wait before reconnecting
@@ -40,12 +46,16 @@ public struct ServerConfig: Codable {
     public init() {}
 
     enum CodingKeys: String, CodingKey {
-        case url, channels, reconnectDelay, maxReconnectAttempts, specPath
+        case url, useKeychainPassword, keychainService, keychainAccount
+        case channels, reconnectDelay, maxReconnectAttempts, specPath
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(url, forKey: .url)
+        try c.encode(useKeychainPassword, forKey: .useKeychainPassword)
+        try c.encode(keychainService, forKey: .keychainService)
+        try c.encode(keychainAccount, forKey: .keychainAccount)
         try c.encode(channels, forKey: .channels)
         try c.encode(reconnectDelay, forKey: .reconnectDelay)
         try c.encode(maxReconnectAttempts, forKey: .maxReconnectAttempts)
@@ -55,6 +65,9 @@ public struct ServerConfig: Codable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         url                 = try c.decodeIfPresent(String.self, forKey: .url)                 ?? "wired://guest@localhost:4871"
+        useKeychainPassword = try c.decodeIfPresent(Bool.self, forKey: .useKeychainPassword)   ?? false
+        keychainService     = try c.decodeIfPresent(String.self, forKey: .keychainService)
+        keychainAccount     = try c.decodeIfPresent(String.self, forKey: .keychainAccount)
         channels            = try c.decodeIfPresent([UInt32].self, forKey: .channels)            ?? [1]
         reconnectDelay      = try c.decodeIfPresent(Double.self, forKey: .reconnectDelay)      ?? 30.0
         maxReconnectAttempts = try c.decodeIfPresent(Int.self, forKey: .maxReconnectAttempts) ?? 0
@@ -64,7 +77,7 @@ public struct ServerConfig: Codable {
 
 // MARK: - Identity
 
-public struct IdentityConfig: Codable {
+public struct IdentityConfig: Codable, Equatable {
     public var nick: String  = "WiredBot"
     public var status: String  = "Powered by AI"
     /// Base64-encoded icon data (same format Wired uses). nil = default icon.
@@ -105,7 +118,7 @@ public struct IdentityConfig: Codable {
 
 // MARK: - LLM
 
-public struct LLMConfig: Codable {
+public struct LLMConfig: Codable, Equatable {
     /// "ollama" | "openai" | "anthropic"
     public var provider: String  = "ollama"
     /// Base URL for the API (Ollama: http://localhost:11434, OpenAI: https://api.openai.com)
@@ -170,7 +183,7 @@ public struct LLMConfig: Codable {
 
 // MARK: - Behavior
 
-public struct BehaviorConfig: Codable {
+public struct BehaviorConfig: Codable, Equatable {
     /// Respond when the bot's nick (or mentionKeywords) appears in a message
     public var respondToMentions: Bool     = true
     /// Respond to every public message (ignores mention check)
@@ -254,7 +267,7 @@ public struct BehaviorConfig: Codable {
 
 // MARK: - Trigger
 
-public struct TriggerConfig: Codable {
+public struct TriggerConfig: Codable, Equatable {
     /// Unique name for this trigger (used in logs / cooldowns)
     public var name: String
     /// Regular expression matched against the full message text
@@ -312,9 +325,9 @@ public struct TriggerConfig: Codable {
     ]
 
     // Memberwise init for static defaults
-    init(name: String, pattern: String, eventTypes: [String] = ["chat", "private"],
-         response: String? = nil, useLLM: Bool = false, llmPromptPrefix: String? = nil,
-         caseSensitive: Bool = false, cooldownSeconds: Double = 0) {
+    public init(name: String, pattern: String, eventTypes: [String] = ["chat", "private"],
+                response: String? = nil, useLLM: Bool = false, llmPromptPrefix: String? = nil,
+                caseSensitive: Bool = false, cooldownSeconds: Double = 0) {
         self.name            = name
         self.pattern         = pattern
         self.eventTypes      = eventTypes
@@ -358,7 +371,7 @@ public struct TriggerConfig: Codable {
 
 // MARK: - Daemon
 
-public struct DaemonConfig: Codable {
+public struct DaemonConfig: Codable, Equatable {
     /// Run in foreground (skip fork). Useful for debugging or Docker.
     public var foreground: Bool   = false
     public var pidFile: String = "/tmp/wiredbot.pid"
