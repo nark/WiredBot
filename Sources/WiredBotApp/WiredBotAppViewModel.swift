@@ -187,6 +187,14 @@ final class WiredBotAppViewModel: ObservableObject {
         await checkProvider()
     }
 
+    func refreshMenu() async {
+        if !hasUnsavedChanges {
+            loadConfig(readingKeychainPassword: false)
+        }
+        await refreshState()
+        refreshLogs()
+    }
+
     func refreshState() async {
         if !isInstalled {
             installState = .uninstalled
@@ -307,7 +315,7 @@ final class WiredBotAppViewModel: ObservableObject {
         }
     }
 
-    func loadConfig() {
+    func loadConfig(readingKeychainPassword: Bool = true) {
         guard fileManager.fileExists(atPath: configURL.path) else {
             config = BotConfig()
             configureRuntimeDefaults()
@@ -318,7 +326,7 @@ final class WiredBotAppViewModel: ObservableObject {
         do {
             config = try ConfigLoader.load(from: configURL.path)
             configureRuntimeDefaults()
-            loadServerPassword()
+            loadServerPassword(readingKeychainPassword: readingKeychainPassword)
             rememberSavedConfiguration()
         } catch {
             publish(error)
@@ -626,7 +634,7 @@ final class WiredBotAppViewModel: ObservableObject {
         }
     }
 
-    private func loadServerPassword() {
+    private func loadServerPassword(readingKeychainPassword: Bool) {
         if let password = URLComponents(string: config.server.url)?.password, !password.isEmpty {
             serverPassword = password
             return
@@ -634,6 +642,10 @@ final class WiredBotAppViewModel: ObservableObject {
 
         guard config.server.useKeychainPassword else {
             serverPassword = ""
+            return
+        }
+
+        guard readingKeychainPassword else {
             return
         }
 

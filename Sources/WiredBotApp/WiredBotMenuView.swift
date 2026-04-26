@@ -48,7 +48,7 @@ struct WiredBotMenuView: View {
             }
         }
         .task {
-            await model.refreshAll()
+            await model.refreshMenu()
         }
     }
 
