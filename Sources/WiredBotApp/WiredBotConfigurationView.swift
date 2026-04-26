@@ -407,6 +407,8 @@ private struct BehaviorPane: View {
 
 private struct TriggersPane: View {
     @EnvironmentObject private var model: WiredBotAppViewModel
+    @AppStorage("wiredbot.triggers.sortColumn") private var persistedSortColumn = TriggerSortColumn.name.rawValue
+    @AppStorage("wiredbot.triggers.sortOrder") private var persistedSortOrder = TriggerSortDirection.forward.rawValue
     @State private var searchText = ""
     @State private var selection: Int?
     @State private var editingIndex: Int?
@@ -503,9 +505,15 @@ private struct TriggersPane: View {
                     self.selection = rows.first?.id
                 }
             }
+            .onChange(of: sortOrder) { newValue in
+                persistSortOrder(newValue)
+            }
             .onSubmit {
                 editingIndex = selection ?? rows.first?.id
             }
+        }
+        .onAppear {
+            sortOrder = persistedSortComparators
         }
         .sheet(item: editingBinding) { item in
             TriggerEditorSheet(index: item.index)
@@ -562,6 +570,70 @@ private struct TriggersPane: View {
         guard model.config.triggers.indices.contains(index) else { return "this trigger" }
         let name = model.config.triggers[index].name.trimmingCharacters(in: .whitespacesAndNewlines)
         return name.isEmpty ? "Untitled trigger" : name
+    }
+
+    private var persistedSortComparators: [KeyPathComparator<TriggerListRow>] {
+        let column = TriggerSortColumn(rawValue: persistedSortColumn) ?? .name
+        let direction = TriggerSortDirection(rawValue: persistedSortOrder) ?? .forward
+        return [column.comparator(order: direction.sortOrder)]
+    }
+
+    private func persistSortOrder(_ comparators: [KeyPathComparator<TriggerListRow>]) {
+        guard let comparator = comparators.first else { return }
+        let column = TriggerSortColumn(comparator: comparator) ?? .name
+        persistedSortColumn = column.rawValue
+        persistedSortOrder = TriggerSortDirection(comparator.order).rawValue
+    }
+}
+
+private enum TriggerSortColumn: String {
+    case name
+    case types
+    case pattern
+    case action
+
+    init?(comparator: KeyPathComparator<TriggerListRow>) {
+        switch comparator.keyPath {
+        case \TriggerListRow.name:
+            self = .name
+        case \TriggerListRow.typesTitle:
+            self = .types
+        case \TriggerListRow.pattern:
+            self = .pattern
+        case \TriggerListRow.actionTitle:
+            self = .action
+        default:
+            return nil
+        }
+    }
+
+    func comparator(order: SortOrder) -> KeyPathComparator<TriggerListRow> {
+        switch self {
+        case .name:
+            return KeyPathComparator(\TriggerListRow.name, order: order)
+        case .types:
+            return KeyPathComparator(\TriggerListRow.typesTitle, order: order)
+        case .pattern:
+            return KeyPathComparator(\TriggerListRow.pattern, order: order)
+        case .action:
+            return KeyPathComparator(\TriggerListRow.actionTitle, order: order)
+        }
+    }
+}
+
+private enum TriggerSortDirection: String {
+    case forward
+    case reverse
+
+    init(_ sortOrder: SortOrder) {
+        self = sortOrder == .reverse ? .reverse : .forward
+    }
+
+    var sortOrder: SortOrder {
+        switch self {
+        case .forward: return .forward
+        case .reverse: return .reverse
+        }
     }
 }
 
