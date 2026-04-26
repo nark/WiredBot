@@ -259,14 +259,6 @@ Controls when and how the bot reacts to events.
 | `respondToPrivateMessages` | bool | `true` | Reply to private messages (DMs). |
 | `respondToConversation` | bool | `false` | Once a user has started a conversation (by mention or trigger), keep replying to their subsequent messages **without requiring a new mention**, as long as the silence gap is below `threadTimeoutSeconds`. |
 | `respondInUserLanguage` | bool | `true` | Detect the language of each user message and always reply in the same language. The instruction is injected into the system prompt so the LLM handles detection natively. |
-| `greetOnJoin` | bool | `true` | Send a welcome message when a user joins a channel. |
-| `greetMessage` | string | `"Welcome, {nick}!"` | Welcome message template. Supports `{nick}`, `{chatID}`. |
-| `farewellOnLeave` | bool | `false` | Send a farewell message when a user leaves. |
-| `farewellMessage` | string | `"Goodbye, {nick}!"` | Farewell message template. |
-| `announceNewThreads` | bool | `true` | Announce new board posts. |
-| `announceNewThreadMessage` | string | `"New board post: \"{subject}\" by {nick}"` | Announcement template. Supports `{nick}`, `{subject}`, `{board}`. |
-| `announceFileUploads` | bool | `false` | Announce files uploaded to the server. |
-| `announceFileMessage` | string | `"{nick} uploaded: {filename}"` | Announcement template. Supports `{nick}`, `{filename}`, `{path}`. |
 | `rateLimitSeconds` | float | `2.0` | Minimum delay (seconds) between two bot responses. Prevents spam. |
 | `maxResponseLength` | int | `500` | Maximum response length (characters). Longer responses are truncated with `…`. |
 | `ignoreOwnMessages` | bool | `true` | Ignore messages sent by the bot itself (prevents loops). |
@@ -284,14 +276,6 @@ Controls when and how the bot reacts to events.
   "respondToPrivateMessages": true,
   "respondToConversation": true,
   "respondInUserLanguage": true,
-  "greetOnJoin": true,
-  "greetMessage": "Hey {nick}, welcome to the server!",
-  "farewellOnLeave": true,
-  "farewellMessage": "See you, {nick}!",
-  "announceNewThreads": true,
-  "announceNewThreadMessage": "New board post: \"{subject}\" by {nick}",
-  "announceFileUploads": false,
-  "announceFileMessage": "{nick} uploaded: {filename}",
   "rateLimitSeconds": 3.0,
   "maxResponseLength": 400,
   "ignoreOwnMessages": true,
@@ -351,14 +335,19 @@ Array of custom triggers. Each trigger is a JSON object.
 |-----|------|----------|-------------|
 | `name` | string | yes | Unique identifier (used for logs and cooldowns). |
 | `pattern` | string | yes | Regular expression (POSIX extended) tested against the message text. |
-| `eventTypes` | [string] | no | Activating event types: `"chat"`, `"private"`, `"all"`. Default: `["chat", "private"]`. |
+| `eventTypes` | [string] | no | Activating event types. Default: `["chat", "private"]`. |
+| `isEnabled` | bool | no | Whether this trigger can fire. Default: `true`. |
 | `response` | string? | no | Static response. Takes priority over `useLLM`. Supports `{variable}` templates. |
 | `useLLM` | bool | no | If `true` and `response` is absent, sends the input to the LLM. Default: `false`. |
 | `llmPromptPrefix` | string? | no | Text prepended to user input before sending to the LLM. |
 | `caseSensitive` | bool | no | Is the regex case-sensitive? Default: `false`. |
 | `cooldownSeconds` | float | no | Delay between two firings of the same trigger **per user**. `0` = no cooldown. |
 
-**Priority order:** Triggers are tested in array order. The **first match** wins. If no trigger matches, the bot checks for a mention before calling the LLM.
+Supported event types: `"chat"`, `"private"`, `"user_join"`, `"user_leave"`, `"user_status_changed"`, `"user_nick_changed"`, `"broadcast"`, `"file_uploaded"`, `"thread_added"`, `"thread_changed"`, `"board_reaction_added"`, and `"all"`.
+
+Legacy behavior keys (`greetOnJoin`, `greetMessage`, `farewellOnLeave`, `farewellMessage`, `announceFileUploads`, `announceFileMessage`) are still read and migrated into triggers when an old config is loaded. Newly saved configs use triggers.
+
+**Priority order:** Triggers are tested in array order. The **first match** wins for each event type. If no chat trigger matches, the bot checks for a mention before calling the LLM.
 
 ```json
 "triggers": [
@@ -593,17 +582,26 @@ If the user sends `!summarize Lorem ipsum dolor sit amet...`, the LLM receives:
 
 ## Template Variables
 
-`{variable}` templates are available in `response`, `greetMessage`, `farewellMessage`, `announceNewThreadMessage` and `announceFileMessage`.
+`{variable}` templates are available in trigger `response` and `llmPromptPrefix` values.
 
 | Variable | Available in | Description |
 |----------|-------------|-------------|
 | `{nick}` | all | Nickname of the user involved |
-| `{input}` | `response` | Original message text that triggered the trigger |
-| `{chatID}` | `response`, `greetMessage`, `farewellMessage` | Numeric channel ID |
-| `{subject}` | `announceNewThreadMessage` | Subject of the new thread |
-| `{board}` | `announceNewThreadMessage` | Board name |
-| `{filename}` | `announceFileMessage` | Filename (without path) |
-| `{path}` | `announceFileMessage` | Full file path |
+| `{input}` | chat, private, broadcast | Original message text that triggered the trigger |
+| `{body}` | broadcast | Broadcast body |
+| `{chatID}` | chat, private, user events | Numeric channel ID |
+| `{userID}` | user events, broadcast | Numeric user ID when available |
+| `{oldNick}` | user nick/status events | Previous nickname when available |
+| `{status}` | user status events | Updated status text |
+| `{subject}` | board events | Subject of the thread |
+| `{board}` | board events | Board name |
+| `{text}` | `thread_changed` | Board post body |
+| `{filename}` | `file_uploaded` | Filename (without path) |
+| `{path}` | `file_uploaded` | Full file path |
+| `{emoji}` | `board_reaction_added` | Reaction emoji |
+| `{count}` | `board_reaction_added` | Updated reaction count |
+| `{thread}` | board reaction events | Thread UUID |
+| `{post}` | board reaction events | Post UUID, when the reaction targets a post |
 
 ---
 

@@ -71,6 +71,37 @@ public final class BoardEventHandler {
         }
     }
 
+    public func handleReactionAdded(message: P7Message, bot: BotController) {
+        let nick = message.string(forField: "wired.board.reaction.nick")
+            ?? message.string(forField: "wired.user.nick")
+            ?? "someone"
+        let emoji = message.string(forField: "wired.board.reaction.emoji") ?? ""
+        let count = message.uint32(forField: "wired.board.reaction.count") ?? 0
+        let subject = message.string(forField: "wired.board.subject") ?? ""
+        let board = message.string(forField: "wired.board.board") ?? ""
+        let thread = message.uuid(forField: "wired.board.thread") ?? ""
+        let post = message.uuid(forField: "wired.board.post") ?? ""
+
+        BotLogger.info("Board reaction added: \(emoji) by \(nick)")
+
+        let vars = [
+            "nick": nick,
+            "emoji": emoji,
+            "count": "\(count)",
+            "subject": subject,
+            "board": board,
+            "thread": thread,
+            "post": post
+        ]
+        if let match = bot.triggerEngine.matchEvent(eventType: "board_reaction_added",
+                                                    input: "\(emoji) \(subject) \(board)",
+                                                    nick: nick,
+                                                    variables: vars,
+                                                    cooldownScope: "\(thread)|\(post)|\(emoji)") {
+            bot.fireEventTrigger(match)
+        }
+    }
+
     // MARK: - Private
 
     private func fire(match: BoardTriggerMatch, nick: String, subject: String,

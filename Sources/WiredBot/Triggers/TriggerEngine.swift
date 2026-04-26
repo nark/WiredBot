@@ -22,6 +22,16 @@ public struct BoardTriggerMatch {
     public let board: String   // board path
 }
 
+/// Result returned when a non-chat event trigger fires.
+public struct EventTriggerMatch {
+    public let trigger: TriggerConfig
+    public let eventType: String
+    public let input: String
+    public let nick: String
+    public let chatID: UInt32?
+    public let variables: [String: String]
+}
+
 // MARK: - Engine
 
 public final class TriggerEngine {
@@ -48,6 +58,7 @@ public final class TriggerEngine {
         lock.unlock()
 
         for trigger in currentTriggers {
+            guard trigger.isEnabled else { continue }
             // 1. Event type filter
             let types = trigger.eventTypes
             if !types.contains("all") {
@@ -103,6 +114,7 @@ public final class TriggerEngine {
         lock.unlock()
 
         for trigger in currentTriggers {
+            guard trigger.isEnabled else { continue }
             let types = trigger.eventTypes
             guard types.contains(eventType) || types.contains("all") else { continue }
 
@@ -130,6 +142,57 @@ public final class TriggerEngine {
 
             return BoardTriggerMatch(trigger: trigger, subject: subject,
                                     text: text, nick: nick, board: board)
+        }
+        return nil
+    }
+
+    /// Returns the first trigger matching a typed event.
+    ///
+    /// `input` is the text matched by the regular expression, while `variables`
+    /// are used by callers to render static responses or LLM prompt prefixes.
+    public func matchEvent(eventType: String,
+                           input: String,
+                           nick: String,
+                           chatID: UInt32? = nil,
+                           variables: [String: String],
+                           cooldownScope: String? = nil) -> EventTriggerMatch? {
+        lock.lock()
+        let currentTriggers = triggers
+        lock.unlock()
+
+        for trigger in currentTriggers {
+            guard trigger.isEnabled else { continue }
+            let types = trigger.eventTypes
+            guard types.contains(eventType) || types.contains("all") else { continue }
+
+            let scope = cooldownScope ?? nick
+            if trigger.cooldownSeconds > 0 {
+                let key = "\(trigger.name)|\(eventType)|\(scope)"
+                lock.lock()
+                let last = cooldowns[key]
+                lock.unlock()
+                if let last, Date().timeIntervalSince(last) < trigger.cooldownSeconds { continue }
+            }
+
+            let options: NSRegularExpression.Options = trigger.caseSensitive ? [] : .caseInsensitive
+            guard let regex = try? NSRegularExpression(pattern: trigger.pattern, options: options)
+            else { continue }
+            let range = NSRange(input.startIndex..., in: input)
+            guard regex.firstMatch(in: input, range: range) != nil else { continue }
+
+            if trigger.cooldownSeconds > 0 {
+                let key = "\(trigger.name)|\(eventType)|\(scope)"
+                lock.lock()
+                cooldowns[key] = Date()
+                lock.unlock()
+            }
+
+            return EventTriggerMatch(trigger: trigger,
+                                     eventType: eventType,
+                                     input: input,
+                                     nick: nick,
+                                     chatID: chatID,
+                                     variables: variables)
         }
         return nil
     }

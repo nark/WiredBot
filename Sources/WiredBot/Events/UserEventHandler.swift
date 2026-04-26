@@ -28,12 +28,13 @@ public final class UserEventHandler {
         guard nick != bot.config.identity.nick else { return }
         BotLogger.info("User '\(nick)' joined channel \(chatID)")
 
-        if bot.config.behavior.greetOnJoin {
-            let msg = bot.triggerEngine.format(
-                bot.config.behavior.greetMessage,
-                with: ["nick": nick, "chatID": "\(chatID)"]
-            )
-            bot.sendChat(msg, to: chatID)
+        let vars = ["nick": nick, "chatID": "\(chatID)", "userID": "\(userID)"]
+        if let match = bot.triggerEngine.matchEvent(eventType: "user_join",
+                                                    input: nick,
+                                                    nick: nick,
+                                                    chatID: chatID,
+                                                    variables: vars) {
+            bot.fireEventTrigger(match)
         }
     }
 
@@ -47,21 +48,52 @@ public final class UserEventHandler {
         BotLogger.info("User '\(nick)' left channel \(chatID)")
         bot.removeUser(userID, from: chatID)
 
-        if bot.config.behavior.farewellOnLeave && nick != bot.config.identity.nick {
-            let msg = bot.triggerEngine.format(
-                bot.config.behavior.farewellMessage,
-                with: ["nick": nick, "chatID": "\(chatID)"]
-            )
-            bot.sendChat(msg, to: chatID)
+        guard nick != bot.config.identity.nick else { return }
+        let vars = ["nick": nick, "chatID": "\(chatID)", "userID": "\(userID)"]
+        if let match = bot.triggerEngine.matchEvent(eventType: "user_leave",
+                                                    input: nick,
+                                                    nick: nick,
+                                                    chatID: chatID,
+                                                    variables: vars) {
+            bot.fireEventTrigger(match)
         }
     }
 
     public func handleUserStatus(message: P7Message, bot: BotController) {
         guard
             let chatID = message.uint32(forField: "wired.chat.id"),
-            let userID = message.uint32(forField: "wired.user.id"),
-            let nick   = message.string(forField: "wired.user.nick")
+            let userID = message.uint32(forField: "wired.user.id")
         else { return }
+        let oldNick = bot.nick(ofUser: userID, in: chatID) ?? "User\(userID)"
+        let nick = message.string(forField: "wired.user.nick") ?? oldNick
+        let status = message.string(forField: "wired.user.status") ?? ""
         bot.setNick(nick, forUser: userID, in: chatID)
+
+        guard nick != bot.config.identity.nick else { return }
+
+        let vars = [
+            "nick": nick,
+            "oldNick": oldNick,
+            "status": status,
+            "chatID": "\(chatID)",
+            "userID": "\(userID)"
+        ]
+
+        if oldNick != nick,
+           let match = bot.triggerEngine.matchEvent(eventType: "user_nick_changed",
+                                                    input: "\(oldNick) \(nick)",
+                                                    nick: nick,
+                                                    chatID: chatID,
+                                                    variables: vars) {
+            bot.fireEventTrigger(match)
+        }
+
+        if let match = bot.triggerEngine.matchEvent(eventType: "user_status_changed",
+                                                    input: status.isEmpty ? nick : "\(nick) \(status)",
+                                                    nick: nick,
+                                                    chatID: chatID,
+                                                    variables: vars) {
+            bot.fireEventTrigger(match)
+        }
     }
 }

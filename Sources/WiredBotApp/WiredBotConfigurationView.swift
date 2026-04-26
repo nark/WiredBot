@@ -388,21 +388,6 @@ private struct BehaviorPane: View {
                 Toggle("Ignore own messages", isOn: $model.config.behavior.ignoreOwnMessages)
             }
 
-            SettingsSection("Messages") {
-                Toggle("Greet on join", isOn: $model.config.behavior.greetOnJoin)
-                TextField("Greeting", text: $model.config.behavior.greetMessage)
-                    .textFieldStyle(.roundedBorder)
-                TokenHelp(tokens: ["{nick}", "{chatID}"])
-                Toggle("Farewell on leave", isOn: $model.config.behavior.farewellOnLeave)
-                TextField("Farewell", text: $model.config.behavior.farewellMessage)
-                    .textFieldStyle(.roundedBorder)
-                TokenHelp(tokens: ["{nick}", "{chatID}"])
-                Toggle("Announce file uploads", isOn: $model.config.behavior.announceFileUploads)
-                TextField("File upload message", text: $model.config.behavior.announceFileMessage)
-                    .textFieldStyle(.roundedBorder)
-                TokenHelp(tokens: ["{nick}", "{filename}", "{path}"])
-            }
-
             SettingsSection("Limits and filters") {
                 NumericField("Rate limit", value: $model.config.behavior.rateLimitSeconds, suffix: "seconds")
                 IntField("Max response length", value: $model.config.behavior.maxResponseLength)
@@ -422,26 +407,208 @@ private struct BehaviorPane: View {
 
 private struct TriggersPane: View {
     @EnvironmentObject private var model: WiredBotAppViewModel
+    @State private var searchText = ""
+    @State private var selection: Int?
+    @State private var editingIndex: Int?
+    @State private var pendingDeleteIndex: Int?
+    @State private var showDeleteConfirmation = false
+    @State private var sortOrder = [KeyPathComparator(\TriggerListRow.name)]
+
+    private var rows: [TriggerListRow] {
+        let filteredRows: [TriggerListRow] = model.config.triggers.indices.compactMap { index in
+            let trigger = model.config.triggers[index]
+            guard matchesSearch(trigger) else { return nil }
+            return TriggerListRow(index: index, trigger: trigger)
+        }
+        return filteredRows.sorted(using: sortOrder)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Header(title: "Triggers", subtitle: "\(model.config.triggers.count) configured trigger(s).")
+            Header(title: "Triggers", subtitle: "\(rows.count) visible of \(model.config.triggers.count) configured trigger(s).")
 
             HStack {
                 Button {
+                    let newIndex = model.config.triggers.count
                     model.config.triggers.append(TriggerConfig(name: "new-trigger", pattern: "^!command"))
+                    selection = newIndex
+                    editingIndex = newIndex
                 } label: {
                     Label("Add", systemImage: "plus")
                 }
+                Button {
+                    if let selection {
+                        editingIndex = selection
+                    }
+                } label: {
+                    Label("Edit", systemImage: "pencil")
+                }
+                .disabled(selection == nil || !model.config.triggers.indices.contains(selection!))
+                Button(role: .destructive) {
+                    if let selection, model.config.triggers.indices.contains(selection) {
+                        pendingDeleteIndex = selection
+                        showDeleteConfirmation = true
+                    }
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                }
+                .disabled(selection == nil || !model.config.triggers.indices.contains(selection!))
                 Spacer()
             }
 
-            ForEach(model.config.triggers.indices, id: \.self) { index in
-                TriggerEditor(trigger: $model.config.triggers[index]) {
-                    model.config.triggers.remove(at: index)
+            TextField("Search triggers", text: $searchText)
+                .textFieldStyle(.roundedBorder)
+
+            Table(rows, selection: $selection, sortOrder: $sortOrder) {
+                TableColumn("Name", value: \.name) { row in
+                    HStack(spacing: 6) {
+                        Image(systemName: row.trigger.isEnabled ? "checkmark.circle.fill" : "pause.circle")
+                            .foregroundStyle(row.trigger.isEnabled ? Color.green : Color.secondary)
+                        Text(row.name)
+                            .lineLimit(1)
+                    }
+                }
+                TableColumn("Types", value: \.typesTitle) { row in
+                    Text(row.typesTitle)
+                        .lineLimit(1)
+                }
+                TableColumn("Pattern", value: \.pattern) { row in
+                    Text(row.pattern)
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1)
+                }
+                TableColumn("Action", value: \.actionTitle) { row in
+                    Text(row.actionTitle)
+                        .foregroundStyle(.secondary)
                 }
             }
+            .contextMenu(forSelectionType: Int.self) { indexes in
+                if let index = indexes.first, model.config.triggers.indices.contains(index) {
+                    Button("Edit") {
+                        editingIndex = index
+                    }
+                    Button("Delete", role: .destructive) {
+                        pendingDeleteIndex = index
+                        showDeleteConfirmation = true
+                    }
+                }
+            } primaryAction: { indexes in
+                if let index = indexes.first, model.config.triggers.indices.contains(index) {
+                    editingIndex = index
+                }
+            }
+            .frame(minHeight: 420)
+            .onChange(of: searchText) { _ in
+                if let selection, !rows.contains(where: { $0.id == selection }) {
+                    self.selection = rows.first?.id
+                }
+            }
+            .onSubmit {
+                editingIndex = selection ?? rows.first?.id
+            }
         }
+        .sheet(item: editingBinding) { item in
+            TriggerEditorSheet(index: item.index)
+                .environmentObject(model)
+        }
+        .confirmationDialog("Delete Trigger",
+                            isPresented: $showDeleteConfirmation,
+                            presenting: pendingDeleteIndex) { index in
+            Button("Delete", role: .destructive) {
+                deleteTrigger(at: index)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeleteIndex = nil
+            }
+        } message: { index in
+            Text("Delete “\(triggerName(at: index))”? This cannot be undone.")
+        }
+    }
+
+    private var editingBinding: Binding<TriggerEditorItem?> {
+        Binding(
+            get: {
+                guard let editingIndex,
+                      model.config.triggers.indices.contains(editingIndex) else { return nil }
+                return TriggerEditorItem(index: editingIndex)
+            },
+            set: { newValue in
+                editingIndex = newValue?.index
+            }
+        )
+    }
+
+    private func matchesSearch(_ trigger: TriggerConfig) -> Bool {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return true }
+        let haystack = [
+            trigger.name,
+            trigger.pattern,
+            trigger.eventTypes.joined(separator: " "),
+            trigger.response ?? "",
+            trigger.llmPromptPrefix ?? ""
+        ].joined(separator: " ").lowercased()
+        return haystack.contains(query.lowercased())
+    }
+
+    private func deleteTrigger(at index: Int) {
+        guard model.config.triggers.indices.contains(index) else { return }
+        model.config.triggers.remove(at: index)
+        selection = nil
+        pendingDeleteIndex = nil
+    }
+
+    private func triggerName(at index: Int) -> String {
+        guard model.config.triggers.indices.contains(index) else { return "this trigger" }
+        let name = model.config.triggers[index].name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? "Untitled trigger" : name
+    }
+}
+
+private struct TriggerListRow: Identifiable {
+    let index: Int
+    let trigger: TriggerConfig
+    var id: Int { index }
+    var name: String {
+        trigger.name.isEmpty ? "Untitled trigger" : trigger.name
+    }
+    var typesTitle: String {
+        trigger.eventTypes.map(triggerEventTitle).joined(separator: ", ")
+    }
+    var pattern: String {
+        trigger.pattern
+    }
+    var actionTitle: String {
+        trigger.useLLM ? "LLM" : (trigger.response == nil ? "None" : "Static")
+    }
+}
+
+private struct TriggerEditorItem: Identifiable {
+    let index: Int
+    var id: Int { index }
+}
+
+private struct TriggerEditorSheet: View {
+    @EnvironmentObject private var model: WiredBotAppViewModel
+    @Environment(\.dismiss) private var dismiss
+    let index: Int
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Header(title: "Trigger", subtitle: model.config.triggers[index].name)
+            TriggerEditor(trigger: $model.config.triggers[index]) {
+                model.config.triggers.remove(at: index)
+                dismiss()
+            }
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 720)
+        .frame(minHeight: 620)
     }
 }
 
@@ -462,6 +629,7 @@ private struct TriggerEditor: View {
             TextField("Pattern", text: $trigger.pattern)
                 .textFieldStyle(.roundedBorder)
             TriggerEventTypesPicker(values: $trigger.eventTypes)
+            Toggle("Enabled", isOn: $trigger.isEnabled)
             Toggle("Use LLM", isOn: $trigger.useLLM)
             Toggle("Case sensitive", isOn: $trigger.caseSensitive)
             NumericField("Cooldown", value: $trigger.cooldownSeconds, suffix: "seconds")
@@ -484,6 +652,24 @@ private struct TriggerEditor: View {
         let eventTypes = Set(trigger.eventTypes)
         if eventTypes.contains("thread_added") || eventTypes.contains("thread_changed") {
             return ["{nick}", "{subject}", "{board}", "{text}"]
+        }
+        if eventTypes.contains("file_uploaded") {
+            return ["{nick}", "{filename}", "{path}"]
+        }
+        if eventTypes.contains("user_join") || eventTypes.contains("user_leave") {
+            return ["{nick}", "{chatID}", "{userID}"]
+        }
+        if eventTypes.contains("user_status_changed") {
+            return ["{nick}", "{oldNick}", "{status}", "{chatID}", "{userID}"]
+        }
+        if eventTypes.contains("user_nick_changed") {
+            return ["{nick}", "{oldNick}", "{chatID}", "{userID}"]
+        }
+        if eventTypes.contains("broadcast") {
+            return ["{nick}", "{input}", "{body}", "{userID}"]
+        }
+        if eventTypes.contains("board_reaction_added") {
+            return ["{nick}", "{emoji}", "{count}", "{subject}", "{board}", "{thread}", "{post}"]
         }
         return ["{nick}", "{input}", "{chatID}"]
     }
@@ -508,8 +694,15 @@ private struct TriggerEventTypesPicker: View {
     private let options: [TriggerEventTypeOption] = [
         .init(id: "chat", title: "Chat messages", detail: "Public chat messages"),
         .init(id: "private", title: "Private messages", detail: "Direct messages to the bot"),
+        .init(id: "user_join", title: "User joined", detail: "A user joined a chat"),
+        .init(id: "user_leave", title: "User left", detail: "A user left a chat"),
+        .init(id: "user_status_changed", title: "User status changed", detail: "A user changed status or icon"),
+        .init(id: "user_nick_changed", title: "User nick changed", detail: "A user changed nickname"),
+        .init(id: "broadcast", title: "Broadcast", detail: "A server broadcast was received"),
+        .init(id: "file_uploaded", title: "File uploaded", detail: "A user uploaded a file"),
         .init(id: "thread_added", title: "Board threads", detail: "New board thread"),
         .init(id: "thread_changed", title: "Board replies", detail: "New reply on a board thread"),
+        .init(id: "board_reaction_added", title: "Board reaction added", detail: "A board reaction was added"),
         .init(id: "all", title: "All trigger events", detail: "Match any supported trigger event")
     ]
 
@@ -613,6 +806,24 @@ private struct TriggerEventTypeOption: Identifiable {
     let id: String
     let title: String
     let detail: String
+}
+
+private func triggerEventTitle(_ value: String) -> String {
+    switch value {
+    case "chat": return "Chat messages"
+    case "private": return "Private messages"
+    case "user_join": return "User joined"
+    case "user_leave": return "User left"
+    case "user_status_changed": return "User status changed"
+    case "user_nick_changed": return "User nick changed"
+    case "broadcast": return "Broadcast"
+    case "file_uploaded": return "File uploaded"
+    case "thread_added": return "Board threads"
+    case "thread_changed": return "Board replies"
+    case "board_reaction_added": return "Board reaction added"
+    case "all": return "All trigger events"
+    default: return value
+    }
 }
 
 private struct FlowLayout<Content: View>: View {

@@ -21,6 +21,26 @@ public struct BotConfig: Codable, Equatable {
         triggers = TriggerConfig.defaults
         daemon   = DaemonConfig()
     }
+
+    enum CodingKeys: String, CodingKey {
+        case server, identity, llm, behavior, triggers, daemon
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        server   = try c.decodeIfPresent(ServerConfig.self, forKey: .server)   ?? ServerConfig()
+        identity = try c.decodeIfPresent(IdentityConfig.self, forKey: .identity) ?? IdentityConfig()
+        llm      = try c.decodeIfPresent(LLMConfig.self, forKey: .llm)      ?? LLMConfig()
+        behavior = try c.decodeIfPresent(BehaviorConfig.self, forKey: .behavior) ?? BehaviorConfig()
+        daemon   = try c.decodeIfPresent(DaemonConfig.self, forKey: .daemon)   ?? DaemonConfig()
+
+        var decodedTriggers = try c.decodeIfPresent([TriggerConfig].self, forKey: .triggers)
+            ?? TriggerConfig.defaults
+        if let legacyBehavior = try? c.decodeIfPresent(LegacyBehaviorTriggerConfig.self, forKey: .behavior) {
+            legacyBehavior.apply(to: &decodedTriggers)
+        }
+        triggers = decodedTriggers
+    }
 }
 
 // MARK: - Server
@@ -239,6 +259,36 @@ public struct BehaviorConfig: Codable, Equatable {
 
     public init() {}
 
+    enum CodingKeys: String, CodingKey {
+        case respondToMentions, respondToAll, respondToPrivateMessages
+        case respondToConversation, respondAfterBotPost
+        case greetOnJoin, greetMessage, farewellOnLeave, farewellMessage
+        case announceFileUploads, announceFileMessage
+        case rateLimitSeconds, maxResponseLength, ignoreOwnMessages
+        case ignoredNicks, mentionKeywords, threadTimeoutSeconds
+        case respondInUserLanguage, spontaneousReply, spontaneousCheckInterval
+        case spontaneousCooldownSeconds
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(respondToMentions, forKey: .respondToMentions)
+        try c.encode(respondToAll, forKey: .respondToAll)
+        try c.encode(respondToPrivateMessages, forKey: .respondToPrivateMessages)
+        try c.encode(respondToConversation, forKey: .respondToConversation)
+        try c.encode(respondAfterBotPost, forKey: .respondAfterBotPost)
+        try c.encode(rateLimitSeconds, forKey: .rateLimitSeconds)
+        try c.encode(maxResponseLength, forKey: .maxResponseLength)
+        try c.encode(ignoreOwnMessages, forKey: .ignoreOwnMessages)
+        try c.encode(ignoredNicks, forKey: .ignoredNicks)
+        try c.encode(mentionKeywords, forKey: .mentionKeywords)
+        try c.encode(threadTimeoutSeconds, forKey: .threadTimeoutSeconds)
+        try c.encode(respondInUserLanguage, forKey: .respondInUserLanguage)
+        try c.encode(spontaneousReply, forKey: .spontaneousReply)
+        try c.encode(spontaneousCheckInterval, forKey: .spontaneousCheckInterval)
+        try c.encode(spontaneousCooldownSeconds, forKey: .spontaneousCooldownSeconds)
+    }
+
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         respondToMentions        = try c.decodeIfPresent(Bool.self, forKey: .respondToMentions)        ?? true
@@ -274,6 +324,8 @@ public struct TriggerConfig: Codable, Equatable {
     public var pattern: String
     /// Which event types activate this trigger: "chat", "private", "all"
     public var eventTypes: [String]   = ["chat", "private"]
+    /// Disabled triggers remain in the configuration but never fire.
+    public var isEnabled: Bool = true
     /// Static response template. Supports: {nick}, {input}, {chatID}
     public var response: String?
     /// When true the input is forwarded to the LLM instead of using `response`
@@ -296,6 +348,12 @@ public struct TriggerConfig: Codable, Equatable {
         TriggerConfig(name: "tldr", pattern: "^!tldr (.+)", eventTypes: ["chat"],
                       useLLM: true, llmPromptPrefix: "Summarize this in one sentence: ",
                       cooldownSeconds: 5),
+        TriggerConfig(name: "greet-on-join", pattern: ".*", eventTypes: ["user_join"],
+                      response: "Welcome, {nick}!", cooldownSeconds: 0),
+        TriggerConfig(name: "farewell-on-leave", pattern: ".*", eventTypes: ["user_leave"],
+                      response: "Goodbye, {nick}!", isEnabled: false, cooldownSeconds: 0),
+        TriggerConfig(name: "announce-file-upload", pattern: ".*", eventTypes: ["file_uploaded"],
+                      response: "{nick} uploaded: {filename}", isEnabled: false, cooldownSeconds: 0),
 
         // ── Board triggers ─────────────────────────────────────────────────────
         // thread_added  : a new thread was created
@@ -326,11 +384,13 @@ public struct TriggerConfig: Codable, Equatable {
 
     // Memberwise init for static defaults
     public init(name: String, pattern: String, eventTypes: [String] = ["chat", "private"],
-                response: String? = nil, useLLM: Bool = false, llmPromptPrefix: String? = nil,
+                response: String? = nil, isEnabled: Bool = true,
+                useLLM: Bool = false, llmPromptPrefix: String? = nil,
                 caseSensitive: Bool = false, cooldownSeconds: Double = 0) {
         self.name            = name
         self.pattern         = pattern
         self.eventTypes      = eventTypes
+        self.isEnabled       = isEnabled
         self.response        = response
         self.useLLM          = useLLM
         self.llmPromptPrefix = llmPromptPrefix
@@ -339,7 +399,7 @@ public struct TriggerConfig: Codable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case name, pattern, eventTypes, response, useLLM, llmPromptPrefix, caseSensitive, cooldownSeconds
+        case name, pattern, eventTypes, isEnabled, response, useLLM, llmPromptPrefix, caseSensitive, cooldownSeconds
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -347,6 +407,7 @@ public struct TriggerConfig: Codable, Equatable {
         try c.encode(name, forKey: .name)
         try c.encode(pattern, forKey: .pattern)
         try c.encode(eventTypes, forKey: .eventTypes)
+        try c.encode(isEnabled, forKey: .isEnabled)
         try c.encode(response, forKey: .response)        // null when nil
         try c.encode(useLLM, forKey: .useLLM)
         try c.encode(llmPromptPrefix, forKey: .llmPromptPrefix) // null when nil
@@ -361,11 +422,76 @@ public struct TriggerConfig: Codable, Equatable {
         pattern = try c.decode(String.self, forKey: .pattern)
         // Optional / defaulted fields
         eventTypes      = try c.decodeIfPresent([String].self, forKey: .eventTypes)      ?? ["chat", "private"]
+        isEnabled       = try c.decodeIfPresent(Bool.self, forKey: .isEnabled)       ?? true
         response        = try c.decodeIfPresent(String.self, forKey: .response)
         useLLM          = try c.decodeIfPresent(Bool.self, forKey: .useLLM)          ?? false
         llmPromptPrefix = try c.decodeIfPresent(String.self, forKey: .llmPromptPrefix)
         caseSensitive   = try c.decodeIfPresent(Bool.self, forKey: .caseSensitive)   ?? false
         cooldownSeconds = try c.decodeIfPresent(Double.self, forKey: .cooldownSeconds) ?? 0
+    }
+}
+
+private struct LegacyBehaviorTriggerConfig: Decodable {
+    var greetOnJoin: Bool?
+    var greetMessage: String?
+    var farewellOnLeave: Bool?
+    var farewellMessage: String?
+    var announceFileUploads: Bool?
+    var announceFileMessage: String?
+
+    func apply(to triggers: inout [TriggerConfig]) {
+        if greetOnJoin != nil || greetMessage != nil {
+            upsert(
+                &triggers,
+                name: "greet-on-join",
+                eventType: "user_join",
+                response: greetMessage ?? "Welcome, {nick}!",
+                isEnabled: greetOnJoin ?? true
+            )
+        }
+
+        if farewellOnLeave != nil || farewellMessage != nil {
+            upsert(
+                &triggers,
+                name: "farewell-on-leave",
+                eventType: "user_leave",
+                response: farewellMessage ?? "Goodbye, {nick}!",
+                isEnabled: farewellOnLeave ?? false
+            )
+        }
+
+        if announceFileUploads != nil || announceFileMessage != nil {
+            upsert(
+                &triggers,
+                name: "announce-file-upload",
+                eventType: "file_uploaded",
+                response: announceFileMessage ?? "{nick} uploaded: {filename}",
+                isEnabled: announceFileUploads ?? false
+            )
+        }
+    }
+
+    private func upsert(_ triggers: inout [TriggerConfig],
+                        name: String,
+                        eventType: String,
+                        response: String,
+                        isEnabled: Bool) {
+        if let index = triggers.firstIndex(where: { $0.name == name }) {
+            triggers[index].pattern = ".*"
+            triggers[index].eventTypes = [eventType]
+            triggers[index].response = response
+            triggers[index].isEnabled = isEnabled
+            return
+        }
+
+        let alreadyConfigured = triggers.contains { trigger in
+            trigger.eventTypes.contains(eventType)
+        }
+        guard !alreadyConfigured else { return }
+        triggers.append(
+            TriggerConfig(name: name, pattern: ".*", eventTypes: [eventType],
+                          response: response, isEnabled: isEnabled)
+        )
     }
 }
 

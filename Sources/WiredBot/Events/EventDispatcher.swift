@@ -62,6 +62,19 @@ public final class EventDispatcher: NSObject, ConnectionDelegate {
         case "wired.chat.topic":
             bot.chatHandler.handleTopic(message: message, bot: bot)
 
+        case "wired.message.broadcast":
+            let body = message.string(forField: "wired.message.broadcast") ?? ""
+            let nick = message.string(forField: "wired.user.nick") ?? "someone"
+            let userID = message.uint32(forField: "wired.user.id") ?? 0
+            let vars = ["nick": nick, "input": body, "body": body, "userID": "\(userID)"]
+            if let match = bot.triggerEngine.matchEvent(eventType: "broadcast",
+                                                        input: body,
+                                                        nick: nick,
+                                                        variables: vars,
+                                                        cooldownScope: "\(userID)") {
+                bot.fireEventTrigger(match)
+            }
+
         // Users
         case "wired.chat.user_list":
             bot.userHandler.handleUserList(message: message, bot: bot)
@@ -81,6 +94,8 @@ public final class EventDispatcher: NSObject, ConnectionDelegate {
             if message.string(forField: "wired.board.post") != nil {
                 bot.boardHandler.handleNewPost(message: message, bot: bot)
             }
+        case "wired.board.reaction_added":
+            bot.boardHandler.handleReactionAdded(message: message, bot: bot)
 
         // Transfers / files
         case "wired.transfer.upload_file", "wired.transfer.upload":

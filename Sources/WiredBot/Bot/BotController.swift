@@ -290,6 +290,34 @@ public final class BotController: NSObject {
         BotLogger.debug("[\(chatID)] Sent: \(body.prefix(80))\(body.count > 80 ? "…" : "")")
     }
 
+    public func fireEventTrigger(_ match: EventTriggerMatch, defaultChatID: UInt32? = nil) {
+        let chatID = match.chatID ?? defaultChatID ?? config.server.channels.first ?? 1
+
+        if match.trigger.useLLM {
+            let rawPrefix = match.trigger.llmPromptPrefix ?? ""
+            let prefix = rawPrefix.isEmpty ? "" : triggerEngine.format(rawPrefix, with: match.variables)
+            let input = prefix.isEmpty ? match.input : "\(prefix)\n\(match.input)"
+            BotLogger.debug("[\(chatID)] Event trigger '\(match.trigger.name)' matched \(match.eventType) → LLM dispatch")
+            dispatchLLM(input: input, nick: match.nick, userID: 0,
+                        chatID: chatID, isPrivate: false, prependNick: false)
+            return
+        }
+
+        guard let template = match.trigger.response else {
+            BotLogger.debug("[\(chatID)] Event trigger '\(match.trigger.name)' matched \(match.eventType) but has no action")
+            return
+        }
+
+        let message = triggerEngine.format(template, with: match.variables)
+        if let targetChatID = match.chatID {
+            sendChat(message, to: targetChatID)
+        } else {
+            for channelID in config.server.channels {
+                sendChat(message, to: channelID)
+            }
+        }
+    }
+
     // MARK: - LLM dispatch
 
     /// Sends `input` to the LLM asynchronously and posts the reply to `chatID`.
