@@ -3,9 +3,24 @@ import SwiftUI
 
 @main
 struct WiredBotApplication: App {
-    @StateObject private var model = WiredBotAppViewModel()
+    @StateObject private var model: WiredBotAppViewModel
     @NSApplicationDelegateAdaptor(WiredBotAppDelegate.self) private var appDelegate
     @Environment(\.openWindow) private var openWindow
+
+    init() {
+        let model = WiredBotAppViewModel()
+        _model = StateObject(wrappedValue: model)
+
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didFinishLaunchingNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                await model.refreshAll()
+            }
+        }
+    }
 
     var body: some Scene {
         MenuBarExtra("Wired Bot", systemImage: model.menuBarSymbolName) {

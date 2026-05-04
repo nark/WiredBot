@@ -182,6 +182,7 @@ final class WiredBotAppViewModel: ObservableObject {
 
     func refreshAll() async {
         loadConfig()
+        synchronizeBundledBinaryForInstalledBot()
         await refreshState()
         refreshLogs()
         await checkProvider()
@@ -191,6 +192,7 @@ final class WiredBotAppViewModel: ObservableObject {
         if !hasUnsavedChanges {
             loadConfig(readingKeychainPassword: false)
         }
+        synchronizeBundledBinaryForInstalledBot()
         await refreshState()
         refreshLogs()
     }
@@ -554,11 +556,102 @@ final class WiredBotAppViewModel: ObservableObject {
             throw WiredBotAppError.missingBundledBinary
         }
 
-        if fileManager.fileExists(atPath: binaryURL.path) {
-            try fileManager.removeItem(at: binaryURL)
+        let expectedSHA256 = try normalizedSHA256ForFile(at: source)
+        try installBinaryWithStagingRollback(from: source, expectedSHA256: expectedSHA256)
+    }
+
+    private func synchronizeBundledBinaryForInstalledBot() {
+        guard isInstalled else { return }
+
+        let wasRunning = launchdPID != nil
+        do {
+            let wasUpdated = try synchronizeInstalledBinaryIfNeeded()
+            if wasUpdated {
+                statusMessage = wasRunning
+                    ? "Wired Bot binary updated; restart required"
+                    : "Wired Bot binary updated"
+                if wasRunning {
+                    promptRestartAfterBinaryUpdate()
+                }
+            }
+        } catch {
+            publish(error)
         }
-        try fileManager.copyItem(at: source, to: binaryURL)
-        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryURL.path)
+    }
+
+    @discardableResult
+    private func synchronizeInstalledBinaryIfNeeded() throws -> Bool {
+        guard let source = resolveSourceBinary() else {
+            throw WiredBotAppError.missingBundledBinary
+        }
+
+        let expectedSHA256 = try normalizedSHA256ForFile(at: source)
+        let installedSHA256 = try normalizedSHA256ForFile(at: binaryURL)
+        guard installedSHA256 != expectedSHA256 else { return false }
+
+        try installBinaryWithStagingRollback(from: source, expectedSHA256: expectedSHA256)
+        return true
+    }
+
+    private func installBinaryWithStagingRollback(from sourceURL: URL, expectedSHA256: String) throws {
+        try bootstrapRuntime()
+
+        let updatesURL = binURL.appendingPathComponent(".updates", isDirectory: true)
+        let token = UUID().uuidString.lowercased()
+        let stagingURL = updatesURL.appendingPathComponent("wiredbot.staged.\(token)")
+        let backupURL = updatesURL.appendingPathComponent("wiredbot.backup.\(token)")
+
+        try fileManager.createDirectory(at: updatesURL, withIntermediateDirectories: true)
+
+        if fileManager.fileExists(atPath: stagingURL.path) {
+            try fileManager.removeItem(at: stagingURL)
+        }
+        try fileManager.copyItem(at: sourceURL, to: stagingURL)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: stagingURL.path)
+
+        let stagedSHA256 = try normalizedSHA256ForFile(at: stagingURL)
+        guard stagedSHA256 == expectedSHA256 else {
+            try? fileManager.removeItem(at: stagingURL)
+            throw WiredBotAppError.binaryIntegrityCheckFailed("staged hash mismatch")
+        }
+
+        let destinationExists = fileManager.fileExists(atPath: binaryURL.path)
+
+        do {
+            if destinationExists {
+                if fileManager.fileExists(atPath: backupURL.path) {
+                    try fileManager.removeItem(at: backupURL)
+                }
+                try fileManager.moveItem(at: binaryURL, to: backupURL)
+            }
+
+            try fileManager.moveItem(at: stagingURL, to: binaryURL)
+            try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binaryURL.path)
+
+            let installedSHA256 = try normalizedSHA256ForFile(at: binaryURL)
+            guard installedSHA256 == expectedSHA256 else {
+                throw WiredBotAppError.binaryIntegrityCheckFailed("installed hash mismatch")
+            }
+
+            if fileManager.fileExists(atPath: backupURL.path) {
+                try? fileManager.removeItem(at: backupURL)
+            }
+        } catch {
+            if fileManager.fileExists(atPath: binaryURL.path) {
+                try? fileManager.removeItem(at: binaryURL)
+            }
+
+            if fileManager.fileExists(atPath: backupURL.path) {
+                do {
+                    try fileManager.moveItem(at: backupURL, to: binaryURL)
+                } catch {
+                    throw WiredBotAppError.binaryRollbackFailed(error.localizedDescription)
+                }
+            }
+
+            try? fileManager.removeItem(at: stagingURL)
+            throw error
+        }
     }
 
     private func installSpecIfNeeded() throws {
@@ -631,6 +724,21 @@ final class WiredBotAppViewModel: ObservableObject {
             statusMessage = "Configuration saved and bot reloaded"
         } else {
             statusMessage = "Configuration saved; reload signal failed"
+        }
+    }
+
+    private func promptRestartAfterBinaryUpdate() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.messageText = "Bot Updated"
+        alert.informativeText = "A new version of the bot binary has been installed. The running bot is still using the previous version. Would you like to restart it now?"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Restart Now")
+        alert.addButton(withTitle: "Later")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            Task { await restartBot() }
         }
     }
 
@@ -733,6 +841,31 @@ final class WiredBotAppViewModel: ObservableObject {
         return ProcessResult(status: task.terminationStatus, output: output, errorOutput: errorOutput)
     }
 
+    private func normalizedSHA256ForFile(at url: URL) throws -> String {
+        let result = runProcess("/usr/bin/shasum", ["-a", "256", url.path])
+        guard result.status == 0 else {
+            let message = result.errorOutput.isEmpty ? result.output : result.errorOutput
+            throw WiredBotAppError.binaryHashFailed(message.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        guard let hashToken = result.output.split(separator: " ", omittingEmptySubsequences: true).first else {
+            throw WiredBotAppError.binaryHashFailed("missing SHA-256 output")
+        }
+
+        let normalized = String(hashToken).trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard isValidSHA256Hex(normalized) else {
+            throw WiredBotAppError.binaryHashFailed("invalid SHA-256 output")
+        }
+
+        return normalized
+    }
+
+    private func isValidSHA256Hex(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy { character in
+            character.isNumber || ("a"..."f").contains(character)
+        }
+    }
+
     private func publish(_ error: Error) {
         errorMessage = error.localizedDescription
         showError = true
@@ -749,6 +882,9 @@ private struct ProcessResult {
 private enum WiredBotAppError: LocalizedError {
     case missingBundledBinary
     case invalidImage
+    case binaryHashFailed(String)
+    case binaryIntegrityCheckFailed(String)
+    case binaryRollbackFailed(String)
     case launchAgentWriteFailed
     case launchctlFailed(String)
 
@@ -758,6 +894,12 @@ private enum WiredBotAppError: LocalizedError {
             return "Could not find the WiredBot command-line binary to install."
         case .invalidImage:
             return "Could not read this image."
+        case .binaryHashFailed(let message):
+            return "Could not verify the WiredBot binary: \(message)"
+        case .binaryIntegrityCheckFailed(let message):
+            return "The WiredBot binary update failed integrity verification: \(message)"
+        case .binaryRollbackFailed(let message):
+            return "The WiredBot binary update failed and rollback could not be completed: \(message)"
         case .launchAgentWriteFailed:
             return "Could not write the LaunchAgent plist."
         case .launchctlFailed(let message):
